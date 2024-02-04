@@ -1,0 +1,312 @@
+#!/bin/bash
+
+# A GitHub CLI extension to archive an organization
+# - https://docs.github.com/en/github-cli/github-cli/creating-github-cli-extensions
+# - https://docs.github.com/en/github-cli/github-cli/using-github-cli-extensions
+# By Matthew Sheets, as adapted from https://github.com/matt-bartel/gh-clone-org
+
+set -e
+
+# == Variable Initialization == #
+GIT_FOLDER_NAME=".git"
+REMOTE_NAME="origin"
+START_PATH="$(pwd)"
+
+# == Function Definitions == #
+usage()
+{
+  echo "gh archive-org [-f RELEASE_FILES] [-p PATH] [-r REPO] [-t TOPIC] [-s QUERY] [-y] [-n] ORG"
+  echo "  ORG"
+  echo "    Github organization. Required if the GITHUB_ORG environment variable is not set."
+  echo "  -f, --release_files [all | latest | none]"
+  echo "    Download all releases (default), latest release, or no releases."
+  echo "  -p, --path PATH"
+  echo "    Archive path, under which org/repo folders will be created. Default: current directory."
+  echo "  -r, --repo REPO"
+  echo "    Archive only the specified repo(s) within the given org."
+  echo "    Multiple repos may be specified by separating repo names with spaces"
+  echo "    and then enclosing that entire group in double quotes (e.g. \"repo1 repo2\")."
+  echo "    If this argument is provided, '-t' and '-s' will be ignored."
+  echo "  -t, --topic TOPIC"
+  echo "    Archive repositories with this topic"
+  echo "  -s --search QUERY"
+  echo "    Archive repositories found by this search string. If this is provided '-t' will be ignored."
+  echo "    Example: -s \"is:public language:go\""
+  echo "    See: https://docs.github.com/en/github/searching-for-information-on-github/searching-on-github/searching-for-repositories"
+  echo "  -y, --yes"
+  echo "    Archive without prompting for confirmation."
+  echo "  -n, --dry-run"
+  echo "    Do not actually archive, just show what would be archived"
+  echo "  -h, --help"
+  echo "    Display this message."
+}
+
+# https://gist.github.com/cdown/1163649
+urlencode() {
+  # urlencode <string>
+
+  old_lc_collate=$LC_COLLATE
+  LC_COLLATE=C
+
+  local length="${#1}"
+  for (( i = 0; i < length; i++ )); do
+    local c="${1:$i:1}"
+    case $c in
+      [a-zA-Z0-9.~_-]) printf '%s' "$c" ;;
+      *) printf '%%%02X' "'$c" ;;
+    esac
+  done
+
+  LC_COLLATE=$old_lc_collate
+}
+
+archive_repository () {
+  local repo=$1
+  repoFolder="$CLONE_PATH/$GITHUB_ORG/$repo/repo"
+  repoGitFolder="$repoFolder/$GIT_FOLDER_NAME"
+  
+  # == Version Control Archiving == #
+  if [ "$DRY_RUN" = "true" ]
+  then
+    echo "$repoFolder"
+  else
+    # Folder setup
+    mkdir -p "$repoFolder"
+    cd "$repoFolder" || exit 1
+    echo ""
+    
+    # Determine the name of the repository's default branch
+    default_branch="$(gh api "repos/$GITHUB_ORG/$repo" -q '.default_branch')"
+    
+    if [ ! -d "$GIT_FOLDER_NAME" ]
+    then
+      # Clone the repository
+      echo "Repo '$repo' not local, cloning to '$repoFolder'"
+    
+      # Mirror repository and setup as a working tree (all steps, including checkout, required)
+      # - https://archive.kernel.org/oldwiki/git.wiki.kernel.org/index.php/Git_FAQ.html#How_do_I_clone_a_repository_with_all_remotely_tracked_branches.3F
+      # - https://stackoverflow.com/a/7216269 (see also answer comments regarding logallrefupdates)
+      gh repo clone "$GITHUB_ORG/$repo" "$GIT_FOLDER_NAME"  --  --mirror -o "$REMOTE_NAME"
+      git config --bool core.bare false
+      git config --bool core.logallrefupdates true
+      git config "remote.$REMOTE_NAME.fetch" "+refs/heads/*:refs/remotes/$REMOTE_NAME/*"
+      git checkout "$default_branch"
+      activeBranch=$default_branch
+    else
+      # Sync the repository
+      echo "Repo '$repo' mirrored, updating '$repoFolder'"
+
+      # Retrieve the remote for a given branch - https://stackoverflow.com/a/46516201
+      default_remote_branch=$(git rev-parse --abbrev-ref "${default_branch}@{u}")
+      REMOTE_NAME=${default_remote_branch%%/*}
+      activeBranch=$(git branch --show-current)
+    fi
+    
+    # For consistent behavior, checkout the default branch (will revert to back currently checked out branch before exiting)
+    if [ "$(git branch --show-current)" != "$default_branch" ]
+    then
+      git checkout "$default_branch"
+    fi
+    
+    # Sync the branches
+    echo "+ Default branch name: '$default_branch'"
+    for remoteHead in $(git ls-remote --heads --quiet "$REMOTE_NAME"  |  cut --fields=2 --only-delimited)
+    do
+      # Get the branch name ( expansion reference - https://guide.bash.academy/expansions/ )
+      branch=${remoteHead##*/}
+      remoteBranch="$REMOTE_NAME/$branch"
+      
+      # Determine whether the local branch is tracking remote
+      tracking=$(git rev-parse --abbrev-ref "${branch}@{u}" 2> /dev/null)
+      if [ -z "$tracking" ]
+      then
+        if [ "$branch" = "$default_branch" ]
+        then
+          echo "✓ Setting branch '$branch' to track default '$remoteBranch'"
+          git pull "$REMOTE_NAME" "$branch"
+          git branch --set-upstream-to="$remoteBranch" "$branch"
+        elif git show-ref --exists "refs/heads/$branch" 2> /dev/null
+        then
+          echo "✓ Setting branch '$branch' to track '$remoteBranch'"
+          git fetch "$REMOTE_NAME" "+$branch:$branch"
+          git branch --set-upstream-to="$remoteBranch" "$branch"
+        else
+          echo "✓ Creating branch '$branch' to track '$remoteBranch'"
+          git branch --track "$branch" "$remoteBranch"
+        fi
+      else
+        echo "✓ Branch '$branch' already tracking '$tracking'"
+      fi
+      
+      gh repo sync --branch "$branch" --source "$GITHUB_ORG/$repo"
+    done
+    
+    echo "✓ Synchronization of individual branches of '$GITHUB_ORG/$repo' complete."
+    git fetch --all
+    git remote update --prune
+    
+    
+    # Reset the environment
+    if [ "$(git branch --show-current)" != "$activeBranch" ]
+    then
+      git checkout "$activeBranch"
+    fi
+    cd "$START_PATH"
+  fi
+
+
+  # == Release Archiving == #
+  if [ "$DOWNLOAD_RELEASES" = "all" ] || [ "$DOWNLOAD_RELEASES" = "latest" ]
+  then
+    RELEASES=$(gh api --paginate "repos/$GITHUB_ORG/$repo/releases" -q ".[].tag_name")
+	
+	# If more than one release is returned, get the latest release (which is not necessarily the first release returned)
+	# NOTE: "gh release view" will return the string "release not found" if there are no releases, so we check to avoid that
+    if [ "$DOWNLOAD_RELEASES" = "latest" ] && [ $(echo "$RELEASES" | wc -l | tr -d ' ') -gt 1 ]
+    then
+      RELEASES=$(gh release view --repo "$GITHUB_ORG/$repo" --json tagName -q ".tagName")
+	fi
+  fi
+  for release in $RELEASES
+  do
+    releasesFolder="$CLONE_PATH/$GITHUB_ORG/$repo/releases/$release"
+    if [ "$DRY_RUN" = "true" ]
+    then
+      echo " - $releasesFolder"
+    else
+	  echo "- Retrieving '$repo' release '$release'"
+	  gh release download $release --pattern "*" --skip-existing --repo "$GITHUB_ORG/$repo" --dir "$releasesFolder"
+	fi
+  done
+}
+
+# == Process Command Line Arguments == #
+while [ "$1" != "" ]
+do
+  case $1 in
+    -o | --org ) shift
+      GITHUB_ORG="$1"
+      ;;
+    -f | --release_files ) shift
+      DOWNLOAD_RELEASES="$1"
+      ;;
+    -r | --repo ) shift
+      REPOS="$1"
+      ;;
+    -p | --path ) shift
+      CLONE_PATH="$1"
+      ;;
+    -t | --topic ) shift
+      CLONE_TOPIC="$1"
+      ;;
+    -s | --search ) shift
+      SEARCH="$1"
+      ;;
+    -y | --yes ) ACCEPT_PROMPT="true"
+      ;;
+    -n | --dry-run) DRY_RUN="true"
+      ;;
+    -h | --help ) usage
+      exit
+      ;;
+    * ) GITHUB_ORG="$1"
+      ;;
+  esac
+  shift
+done
+
+# == Apply Defaults Where Needed == #
+if [ -z "$GITHUB_ORG" ]
+then
+  echo "Github organization is required"
+  usage
+  exit 1
+else
+  # Retrieve proper casing and canonical form of org name
+  GITHUB_ORG=$(gh api "users/$GITHUB_ORG" -q .login)
+fi
+
+if [ -z "$DOWNLOAD_RELEASES" ]
+then
+  DOWNLOAD_RELEASES="all"
+fi
+
+if [ -z "$CLONE_PATH" ]
+then
+  CLONE_PATH=".";
+fi
+
+# Look up repos if not provided on the command line
+if [ -z "$REPOS" ]
+then
+  JQ_QUERY='.items[].name'
+  QUERY="search/repositories?q=org%3A$GITHUB_ORG"
+  if [ -n "$SEARCH" ]
+  then
+    QUERY="$QUERY%20$(urlencode "$SEARCH")"
+  elif [ -n "$CLONE_TOPIC" ]
+  then
+    QUERY="$QUERY%20topic:$CLONE_TOPIC"
+  else
+    # The search api only returns up to 1000 items. If no additional search params are provided we should
+    # use the orgs or users apis so we can get everything.
+    JQ_QUERY='.[].name'
+    if [ "$(gh api "users/$GITHUB_ORG" -q '.type')" = "Organization" ]
+    then
+      QUERY="orgs/$GITHUB_ORG/repos"
+    else
+      QUERY="users/$GITHUB_ORG/repos"
+    fi
+  fi
+
+  echo "Retrieving the list of repositories for '$GITHUB_ORG': $QUERY"
+  REPOS=$(gh api --paginate "$QUERY" -q "$JQ_QUERY")
+else
+  # Reflow space-separated repo names to one repo name per line
+  REPOS=$(echo "$REPOS" | tr ' ' '\n')
+fi
+
+# Verify that we now have at least one repo (either from command line or lookup)
+if [ -z "$REPOS" ]
+then
+  echo "No repositories found for '$GITHUB_ORG'"
+  exit 1
+fi
+
+COUNT=$(echo -e "$REPOS" | wc -l | tr -d ' ')
+
+
+# == Execution Confirmation Prompt == #
+if [ "$DRY_RUN" = "true" ]
+then
+  echo "This would have cloned the following $COUNT repositories under path '$CLONE_PATH' as follows:"
+else
+  if [ "$ACCEPT_PROMPT" != "true" ]
+  then
+    VALID="false"
+    echo "Cloning $COUNT repositories to $CLONE_PATH. Continue? Anything other than 'y' or 'l' will terminate"
+    while [ "$VALID" = "false" ]
+    do
+      read -p "[ (y)es | (l)ist ]> " YESNO
+      if [ "$YESNO" = "l" ]
+      then
+        echo "$REPOS"
+      elif [ "$YESNO" = "y" ]
+      then
+        VALID="true"
+      else
+        exit 1
+      fi
+    done
+  else
+    echo "Found $COUNT repositories to update or clone to '$CLONE_PATH'"
+  fi
+fi
+
+set +e
+
+# == Process the Specified Repos == #
+for repo in $REPOS
+do
+  archive_repository "$repo"
+done
