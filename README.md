@@ -2,6 +2,8 @@
 
 A [GitHub CLI](https://cli.github.com/) extension script to archive all repositories—with their releases—in an organization, optionally filtering by topic or a [search string](https://docs.github.com/en/github/searching-for-information-on-github/searching-on-github/searching-for-repositories). If the repository has already been cloned it will attempt to switch to the default branch and pull.
 
+This extension script was adapted from Matt Bartel’s [gh-clone-org](https://github.com/matt-bartel/gh-clone-org) by Matthew Sheets.
+
 ## Installation
 
 ```bash
