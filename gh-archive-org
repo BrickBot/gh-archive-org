@@ -7,15 +7,18 @@
 
 set -e
 
-# == Variable Initialization == #
+# == Variable Initializations and Defaults == #
+ARCHIVE_PATH="."
+DOWNLOAD_RELEASES="all"
 GIT_FOLDER_NAME=".git"
-REMOTE_NAME="origin"
+ORG_REMOTE_NAME="origin"
 START_PATH="$(pwd)"
+
 
 # == Function Definitions == #
 usage()
 {
-  echo "gh archive-org [-f RELEASE_FILES] [-p PATH] [-r REPO] [-t TOPIC] [-s QUERY] [-y] [-n] ORG"
+  echo "gh archive-org [-f RELEASE_FILES] [-p PATH] [-r REPO] [-t TOPIC] [-s QUERY] [-y] [-n] [HOST/]ORG"
   echo "  ORG"
   echo "    Github organization. Required if the GITHUB_ORG environment variable is not set."
   echo "  -f, --release_files [all | latest | none]"
@@ -62,7 +65,7 @@ urlencode() {
 
 archive_repository () {
   local repo=$1
-  repoFolder="$CLONE_PATH/$GITHUB_ORG/$repo/repo"
+  repoFolder="$ARCHIVE_PATH/$GITHUB_ORG/$repo/repo"
   repoGitFolder="$repoFolder/$GIT_FOLDER_NAME"
   
   # == Version Control Archiving == #
@@ -80,25 +83,25 @@ archive_repository () {
     
     if [ ! -d "$GIT_FOLDER_NAME" ]
     then
-      # Clone the repository
-      echo "Repo '$repo' not local, cloning to '$repoFolder'"
+      # Mirror the repository
+      echo "Archive for '$repo' not found, mirroring to '$repoFolder'"
     
       # Mirror repository and setup as a working tree (all steps, including checkout, required)
       # - https://archive.kernel.org/oldwiki/git.wiki.kernel.org/index.php/Git_FAQ.html#How_do_I_clone_a_repository_with_all_remotely_tracked_branches.3F
       # - https://stackoverflow.com/a/7216269 (see also answer comments regarding logallrefupdates)
-      gh repo clone "$GITHUB_ORG/$repo" "$GIT_FOLDER_NAME"  --  --mirror -o "$REMOTE_NAME"
+      gh repo clone "$GITHUB_ORG/$repo" "$GIT_FOLDER_NAME"  --  --mirror -o "$ORG_REMOTE_NAME"
       git config --bool core.bare false
       git config --bool core.logallrefupdates true
-      git config "remote.$REMOTE_NAME.fetch" "+refs/heads/*:refs/remotes/$REMOTE_NAME/*"
+      git config "remote.$ORG_REMOTE_NAME.fetch" "+refs/heads/*:refs/remotes/$ORG_REMOTE_NAME/*"
       git checkout "$default_branch"
       activeBranch=$default_branch
     else
       # Sync the repository
-      echo "Repo '$repo' mirrored, updating '$repoFolder'"
+      echo "Archive for '$repo' found, updating '$repoFolder'"
 
       # Retrieve the remote for a given branch - https://stackoverflow.com/a/46516201
       default_remote_branch=$(git rev-parse --abbrev-ref "${default_branch}@{u}")
-      REMOTE_NAME=${default_remote_branch%%/*}
+      ORG_REMOTE_NAME=${default_remote_branch%%/*}
       activeBranch=$(git branch --show-current)
     fi
     
@@ -110,11 +113,11 @@ archive_repository () {
     
     # Sync the branches
     echo "+ Default branch name: '$default_branch'"
-    for remoteHead in $(git ls-remote --heads --quiet "$REMOTE_NAME"  |  cut --fields=2 --only-delimited)
+    for remoteHead in $(git ls-remote --heads --quiet "$ORG_REMOTE_NAME"  |  cut --fields=2 --only-delimited)
     do
       # Get the branch name ( expansion reference - https://guide.bash.academy/expansions/ )
       branch=${remoteHead##*/}
-      remoteBranch="$REMOTE_NAME/$branch"
+      remoteBranch="$ORG_REMOTE_NAME/$branch"
       
       # Determine whether the local branch is tracking remote
       tracking=$(git rev-parse --abbrev-ref "${branch}@{u}" 2> /dev/null)
@@ -123,12 +126,12 @@ archive_repository () {
         if [ "$branch" = "$default_branch" ]
         then
           echo "✓ Setting branch '$branch' to track default '$remoteBranch'"
-          git pull "$REMOTE_NAME" "$branch"
+          git pull "$ORG_REMOTE_NAME" "$branch"
           git branch --set-upstream-to="$remoteBranch" "$branch"
         elif git show-ref --exists "refs/heads/$branch" 2> /dev/null
         then
           echo "✓ Setting branch '$branch' to track '$remoteBranch'"
-          git fetch "$REMOTE_NAME" "+$branch:$branch"
+          git fetch "$ORG_REMOTE_NAME" "+$branch:$branch"
           git branch --set-upstream-to="$remoteBranch" "$branch"
         else
           echo "✓ Creating branch '$branch' to track '$remoteBranch'"
@@ -169,7 +172,7 @@ archive_repository () {
   fi
   for release in $RELEASES
   do
-    releasesFolder="$CLONE_PATH/$GITHUB_ORG/$repo/releases/$release"
+    releasesFolder="$ARCHIVE_PATH/$GITHUB_ORG/$repo/releases/$release"
     if [ "$DRY_RUN" = "true" ]
     then
       echo " - $releasesFolder"
@@ -194,7 +197,7 @@ do
       REPOS="$1"
       ;;
     -p | --path ) shift
-      CLONE_PATH="$1"
+      ARCHIVE_PATH="$1"
       ;;
     -t | --topic ) shift
       CLONE_TOPIC="$1"
@@ -224,16 +227,6 @@ then
 else
   # Retrieve proper casing and canonical form of org name
   GITHUB_ORG=$(gh api "users/$GITHUB_ORG" -q .login)
-fi
-
-if [ -z "$DOWNLOAD_RELEASES" ]
-then
-  DOWNLOAD_RELEASES="all"
-fi
-
-if [ -z "$CLONE_PATH" ]
-then
-  CLONE_PATH=".";
 fi
 
 # Look up repos if not provided on the command line
@@ -279,12 +272,12 @@ COUNT=$(echo -e "$REPOS" | wc -l | tr -d ' ')
 # == Execution Confirmation Prompt == #
 if [ "$DRY_RUN" = "true" ]
 then
-  echo "This would have cloned the following $COUNT repositories under path '$CLONE_PATH' as follows:"
+  echo "This would have cloned the following $COUNT repositories under path '$ARCHIVE_PATH' as follows:"
 else
   if [ "$ACCEPT_PROMPT" != "true" ]
   then
     VALID="false"
-    echo "Cloning $COUNT repositories to $CLONE_PATH. Continue? Anything other than 'y' or 'l' will terminate"
+    echo "Cloning $COUNT repositories to $ARCHIVE_PATH. Continue? Anything other than 'y' or 'l' will terminate"
     while [ "$VALID" = "false" ]
     do
       read -p "[ (y)es | (l)ist ]> " YESNO
@@ -299,7 +292,7 @@ else
       fi
     done
   else
-    echo "Found $COUNT repositories to update or clone to '$CLONE_PATH'"
+    echo "Found $COUNT repositories to update or clone to '$ARCHIVE_PATH'"
   fi
 fi
 
