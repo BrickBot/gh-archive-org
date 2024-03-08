@@ -162,13 +162,13 @@ archive_repository () {
   if [ "$DOWNLOAD_RELEASES" = "all" ] || [ "$DOWNLOAD_RELEASES" = "latest" ]
   then
     RELEASES=$(gh api --paginate "repos/$GITHUB_ORG/$repo/releases" -q ".[].tag_name")
-	
-	# If more than one release is returned, get the latest release (which is not necessarily the first release returned)
-	# NOTE: "gh release view" will return the string "release not found" if there are no releases, so we check to avoid that
+  
+    # If more than one release is returned, get the latest release (which is not necessarily the first release returned)
+    # NOTE: "gh release view" will return the string "release not found" if there are no releases, so we check to avoid that
     if [ "$DOWNLOAD_RELEASES" = "latest" ] && [ $(echo "$RELEASES" | wc -l | tr -d ' ') -gt 1 ]
     then
       RELEASES=$(gh release view --repo "$GITHUB_ORG/$repo" --json tagName -q ".tagName")
-	fi
+    fi
   fi
   for release in $RELEASES
   do
@@ -177,11 +177,11 @@ archive_repository () {
     then
       echo " - $releaseFolder"
     else
-	  echo "- Retrieving '$repo' release '$release'"
-	  mkdir -p "$releaseFolder"
-	  gh release view "$release" --repo "$GITHUB_ORG/$repo" --json "body" --jq ".body" > "$releaseFolder/RELEASE_NOTES-$release.md"
-	  gh release download "$release" --pattern "*" --skip-existing --repo "$GITHUB_ORG/$repo" --dir "$releaseFolder"
-	fi
+      echo "- Retrieving '$repo' release '$release'"
+      mkdir -p "$releaseFolder"
+      gh release view "$release" --repo "$GITHUB_ORG/$repo" --json "body" --jq ".body" > "$releaseFolder/RELEASE_NOTES-$release.md"
+      gh release download "$release" --pattern "*" --skip-existing --repo "$GITHUB_ORG/$repo" --dir "$releaseFolder"
+    fi
   done
 }
 
