@@ -172,13 +172,15 @@ archive_repository () {
   fi
   for release in $RELEASES
   do
-    releasesFolder="$ARCHIVE_PATH/$GITHUB_ORG/$repo/releases/$release"
+    releaseFolder="$ARCHIVE_PATH/$GITHUB_ORG/$repo/releases/$release"
     if [ "$DRY_RUN" = "true" ]
     then
-      echo " - $releasesFolder"
+      echo " - $releaseFolder"
     else
 	  echo "- Retrieving '$repo' release '$release'"
-	  gh release download $release --pattern "*" --skip-existing --repo "$GITHUB_ORG/$repo" --dir "$releasesFolder"
+	  mkdir -p "$releaseFolder"
+	  gh release view "$release" --repo "$GITHUB_ORG/$repo" --json "body" --jq ".body" > "$releaseFolder/RELEASE_NOTES-$release.md"
+	  gh release download "$release" --pattern "*" --skip-existing --repo "$GITHUB_ORG/$repo" --dir "$releaseFolder"
 	fi
   done
 }
